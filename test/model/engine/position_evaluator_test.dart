@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dartchess/dartchess.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:fast_immutable_collections/fast_immutable_collections.dart';
@@ -1222,6 +1224,110 @@ void main() {
         isA<StockfishSpec>().having((s) => s.nnuePath, 'nnuePath', isNotNull),
       );
     });
+
+    test(
+      'release() expiry during async spec resolution prevents attaching a stale engine',
+      () async {
+        final nnueService = _PendingNnueService();
+        final container = await makeContainer(
+          overrides: {
+            stockfishNnueServiceProvider: stockfishNnueServiceProvider.overrideWithValue(
+              nnueService,
+            ),
+          },
+        );
+        await setEnginePref(container, ChessEnginePref.sfLatest);
+
+        fakeAsync((async) {
+          final service = readEvaluator(container);
+
+          service.evaluate(makeWork());
+          async.flushMicrotasks();
+          expect(service.state.lifecycle, EngineLifecycle.loading);
+
+          service.release();
+          async.elapse(kEnginePauseDelay + const Duration(milliseconds: 50));
+
+          nnueService.completer.complete(true);
+          async.flushMicrotasks();
+
+          expect(fakeEngine.startCount, 0);
+          expect(service.state.lifecycle, EngineLifecycle.initial);
+        });
+      },
+    );
+
+    test(
+      'switching flavor while async spec resolution is in flight boots the new flavor',
+      () async {
+        final nnueService = _PendingNnueService();
+        final container = await makeContainer(
+          overrides: {
+            stockfishNnueServiceProvider: stockfishNnueServiceProvider.overrideWithValue(
+              nnueService,
+            ),
+          },
+        );
+        await setEnginePref(container, ChessEnginePref.sfLatest);
+
+        final service = readEvaluator(container);
+        service.evaluate(makeWork());
+        await pumpEventQueue();
+        expect(service.state.lifecycle, EngineLifecycle.loading);
+
+        final variantStream = service.evaluate(makeWork(variant: Variant.atomic));
+        await variantStream.first;
+        expect(service.state.spec, const StockfishSpec.fairy());
+
+        // Completing the earlier NNUE check must not overwrite the Fairy engine.
+        nnueService.completer.complete(true);
+        await pumpEventQueue();
+        expect(service.state.spec, const StockfishSpec.fairy());
+        expect(fakeEngine.startCount, 1);
+      },
+    );
+
+    test('switching specs stops the previous engine search', () async {
+      final silentEngine = _SilentFirstSearchEngine();
+      fakeEngine = silentEngine;
+      final container = await makeContainer();
+      final service = readEvaluator(container);
+
+      service.evaluate(makeWork());
+      await pumpEventQueue();
+      expect(service.state.lifecycle, EngineLifecycle.computing);
+      expect(silentEngine.sessions.single.commands.where((c) => c == 'stop'), isEmpty);
+
+      final variantStream = service.evaluate(makeWork(variant: Variant.atomic));
+      await variantStream.first;
+
+      expect(silentEngine.sessions.first.commands.where((c) => c == 'stop'), hasLength(1));
+      expect(service.state.spec, const StockfishSpec.fairy());
+    });
+
+    test(
+      'evaluate() after release() while engine is still loading restores loading state',
+      () async {
+        fakeEngine = FakeEngine(startDelay: const Duration(milliseconds: 50));
+        final container = await makeContainer();
+        final service = readEvaluator(container);
+
+        service.evaluate(makeWork());
+        await pumpEventQueue();
+        expect(service.state.lifecycle, EngineLifecycle.loading);
+
+        service.release();
+        expect(service.state.lifecycle, EngineLifecycle.initial);
+
+        final stream = service.evaluate(makeWork());
+        expect(service.state.lifecycle, EngineLifecycle.loading);
+
+        await stream.first;
+        await pumpEventQueue();
+        expect(fakeEngine.startCount, 1);
+        expect(service.state.lifecycle, EngineLifecycle.idle);
+      },
+    );
   });
 
   group('PositionEvaluator throttle behavior', () {
@@ -1935,4 +2041,24 @@ void main() {
       });
     });
   });
+}
+
+class _PendingNnueService() extends FakeStockfishNnueService {
+  final Completer<bool> completer = Completer<bool>();
+
+  @override
+  Future<bool> checkNNUEFile() => completer.future;
+}
+
+class _SilentFirstSearchEngine() extends FakeEngine {
+  bool _ignoredFirstGo = false;
+
+  @override
+  void onGo(FakeEngineSession session, List<String> parts) {
+    if (!_ignoredFirstGo) {
+      _ignoredFirstGo = true;
+      return;
+    }
+    super.onGo(session, parts);
+  }
 }

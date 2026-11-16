@@ -163,6 +163,7 @@ class Engine(
   _RunningSearch? _running;
   _RunningSearch? _next;
   bool _stopRequested = false;
+  int _pendingReady = 0;
 
   /// The game the last search the engine was actually sent belonged to, or null while it has been
   /// sent none. What makes the table the engine builds up this game's rather than the last one's.
@@ -225,6 +226,7 @@ class Engine(
       _transport.send('ucinewgame');
     }
 
+    _pendingReady++;
     _transport.send('isready');
     return search;
   }
@@ -239,6 +241,7 @@ class Engine(
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _pendingReady = 0;
     _next?._finish(null);
     _next = null;
     _running?._finish(null);
@@ -270,6 +273,7 @@ class Engine(
         // first search rather than from the first time we happen to set something.
         _options.addAll(_declaredDefaults);
       case 'readyok':
+        if (_pendingReady > 0) _pendingReady--;
         _swapSearch();
       case 'bestmove':
         _onBestMove(parts);
@@ -299,6 +303,7 @@ class Engine(
     if (_disposed) return;
     // Nothing is going to answer the searches that were in flight, so their callers are released
     // rather than left waiting on an engine that no longer exists.
+    _pendingReady = 0;
     _next?._finish(null);
     _next = null;
     _running?._finish(null);
@@ -416,19 +421,22 @@ class Engine(
   /// Starts the pending search, if the engine is free to take it.
   ///
   /// Called from `readyok` and from `bestmove`, so a search requested while another one is running
-  /// starts as soon as the engine has answered the one it replaces.
+  /// starts as soon as the engine has answered the one it replaces and acknowledged every pending
+  /// `isready`.
   void _swapSearch() {
     if (_disposed || _running != null) return;
 
-    _stopRequested = false;
     final next = _next;
-    _next = null;
-
     if (next == null) {
+      _stopRequested = false;
       _isSearching.value = false;
       return;
     }
 
+    if (_pendingReady > 0) return;
+
+    _stopRequested = false;
+    _next = null;
     _running = next;
     _lastVariant = next.request.variant;
 

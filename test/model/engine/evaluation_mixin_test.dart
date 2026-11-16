@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:dartchess/dartchess.dart';
+import 'package:fast_immutable_collections/fast_immutable_collections.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lichess_mobile/src/model/common/chess.dart';
+import 'package:lichess_mobile/src/model/common/eval.dart';
 import 'package:lichess_mobile/src/model/common/id.dart';
 import 'package:lichess_mobile/src/model/common/node.dart';
 import 'package:lichess_mobile/src/model/common/uci.dart';
@@ -25,6 +27,9 @@ const _testContext = EvaluationContext(
 /// An evaluator that does not touch any engine: it hands out controllable streams so the test can
 /// observe whether the mixin keeps the returned subscription alive or cancels it.
 class _FakePositionEvaluator(super.context) extends PositionEvaluator {
+  /// Every work passed to [evaluate], in request order.
+  final List<EvalWork> works = [];
+
   /// Every stream handed out by [evaluate], in request order.
   final List<StreamController<EvalResult>> streams = [];
 
@@ -33,6 +38,7 @@ class _FakePositionEvaluator(super.context) extends PositionEvaluator {
 
   @override
   Stream<EvalResult> evaluate(EvalWork work) {
+    works.add(work);
     final controller = StreamController<EvalResult>.broadcast();
     streams.add(controller);
     return controller.stream.where((result) => result.$1 == work);
@@ -145,5 +151,47 @@ void main() {
       isFalse,
       reason: 'a disposed notifier must not leave a listener on the evaluator stream',
     );
+  });
+
+  test('local eval with zero searchTime alongside a cloud eval does not throw', () async {
+    final container = await makeTestContainer();
+    final subscription = container.listen(_testControllerProvider, (_, _) {});
+    addTearDown(subscription.close);
+
+    await container.read(_testControllerProvider.future);
+    final controller = container.read(_testControllerProvider.notifier);
+
+    controller.requestEval();
+    await elapseEvalDebounce();
+
+    controller.positionTree.updateAt(UciPath.empty, (node) {
+      node.eval = const CloudEval(
+        position: Chess.initial,
+        depth: 20,
+        nodes: 100000,
+        pvs: IListConst([
+          PvData(moves: IListConst(['e2e4']), cp: 25),
+        ]),
+      );
+    });
+
+    const localEval = LocalEval(
+      position: Chess.initial,
+      depth: 10,
+      nodes: 500,
+      pvs: IListConst([
+        PvData(moves: IListConst(['e2e4']), cp: 20),
+      ]),
+      millis: 0,
+      searchTime: Duration.zero,
+      threatMode: false,
+      cp: 20,
+    );
+
+    expect(
+      () => fakeEvaluator.streams.single.add((fakeEvaluator.works.single, localEval)),
+      returnsNormally,
+    );
+    await pumpEventQueue();
   });
 }

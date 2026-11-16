@@ -381,12 +381,15 @@ mixin EngineEvaluationMixin<T extends EvaluationMixinState<T>> on AnyNotifier<As
               evalWork.searchTime != kMaxEngineSearchTime) {
             final targetTime = evalWork.searchTime;
             final evalSearchTime = eval.searchTime;
-            final likelyNodes =
-                ((targetTime.inMilliseconds * eval.nodes) / evalSearchTime.inMilliseconds).round();
-            // if the cloud eval is likely better, stop the local engine
-            // nps varies with positional complexity so this is rough, but save planet earth
-            if (likelyNodes < nodeEval.nodes) {
-              _evaluator.stop();
+            if (evalSearchTime.inMilliseconds > 0) {
+              final likelyNodes =
+                  ((targetTime.inMilliseconds * eval.nodes) / evalSearchTime.inMilliseconds)
+                      .round();
+              // if the cloud eval is likely better, stop the local engine
+              // nps varies with positional complexity so this is rough, but save planet earth
+              if (likelyNodes < nodeEval.nodes) {
+                _evaluator.stop();
+              }
             }
             return;
           }

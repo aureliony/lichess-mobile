@@ -184,8 +184,8 @@ class FakeEngine({
   @protected
   void onQuit() {}
 
-  /// Kills the most recent session, as an engine that breaks under load would.
-  void kill(EngineFailure failure) => _sessions.lastOrNull?._die(failure);
+  /// Kills the most recent session, as an engine that breaks or exits on its own would.
+  void kill([EngineFailure? failure]) => _sessions.lastOrNull?._die(failure);
 
   void _enter() {
     _inFlightOps++;

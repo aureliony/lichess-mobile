@@ -118,5 +118,62 @@ void main() {
       expect(fakeEngine.quitCount, 1);
       expect(fakeEngine.sessions.single.spec, const StockfishSpec.fairy());
     });
+
+    test(
+      'unexpected clean engine exit invalidates the provider and rebuilds a live engine',
+      () async {
+        fakeEngine = FakeEngine();
+        final container = await makeContainer();
+        addTearDown(container.dispose);
+
+        final subscription = container.listen<AsyncValue<Engine>>(
+          engineProvider(const StockfishSpec.light()),
+          (_, _) {},
+        );
+        addTearDown(subscription.close);
+
+        final first = await container.read(engineProvider(const StockfishSpec.light()).future);
+        expect(fakeEngine.startCount, 1);
+        expect(first.isDead, isFalse);
+
+        // Simulate the native engine exiting cleanly on its own (death completes with null).
+        fakeEngine.kill();
+        await pumpEventQueue();
+
+        expect(first.isDead, isTrue);
+
+        final second = await container.read(engineProvider(const StockfishSpec.light()).future);
+        expect(fakeEngine.startCount, 2);
+        expect(identical(first, second), isFalse);
+        expect(second.isDead, isFalse);
+      },
+    );
+
+    test('unexpected clean engine exit invalidates the provider and rebuilds a live engine', () async {
+      fakeEngine = FakeEngine();
+      final container = await makeContainer();
+      addTearDown(container.dispose);
+
+      final subscription = container.listen<AsyncValue<Engine>>(
+        engineProvider(const StockfishSpec.light()),
+        (_, _) {},
+      );
+      addTearDown(subscription.close);
+
+      final first = await container.read(engineProvider(const StockfishSpec.light()).future);
+      expect(fakeEngine.startCount, 1);
+      expect(first.isDead, isFalse);
+
+      // Simulate the native engine exiting cleanly on its own (death completes with null).
+      fakeEngine.kill();
+      await pumpEventQueue();
+
+      expect(first.isDead, isTrue);
+
+      final second = await container.read(engineProvider(const StockfishSpec.light()).future);
+      expect(fakeEngine.startCount, 2);
+      expect(identical(first, second), isFalse);
+      expect(second.isDead, isFalse);
+    });
   });
 }

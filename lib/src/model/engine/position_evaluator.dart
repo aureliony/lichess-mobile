@@ -136,6 +136,9 @@ class PositionEvaluator(
   /// whether the NNUE file is on disk.
   bool _resolvingSpec = false;
 
+  /// The flavor currently being resolved while [_resolvingSpec] is true.
+  StockfishFlavor? _resolvingFlavor;
+
   /// Whether the user has turned the engine off with [release].
   ///
   /// A paused evaluator still holds its engine, but says nothing about it: the UI's view of the
@@ -283,17 +286,33 @@ class PositionEvaluator(
       // Already asking for the right engine. It may not be ready yet, in which case the work runs
       // when it is.
       if (_engine case final engine?) {
-        // A pause hid the engine rather than letting go of it, so coming back is a matter of
-        // saying which one it is again and searching on it.
-        _setEngine(AsyncData(engine.name.value));
-        _compute(work);
+        if (engine.isDead) {
+          _logger.warning('Attached engine is dead; reacquiring $flavor');
+          _releaseEngine(invalidate: true);
+        } else {
+          // A pause hid the engine rather than letting go of it, so coming back is a matter of
+          // saying which one it is again and searching on it.
+          _setEngine(AsyncData(engine.name.value));
+          _compute(work);
+          return;
+        }
+      } else {
+        _setEngine(const AsyncLoading());
+        return;
       }
-      return;
     }
 
     if (_resolvingSpec) {
-      _logger.fine('Work requested while the engine is being chosen; it will run when it is ready');
-      return;
+      if (_resolvingFlavor == flavor) {
+        _setEngine(const AsyncLoading());
+        _logger.fine(
+          'Work requested while the engine is being chosen; it will run when it is ready',
+        );
+        return;
+      }
+      // Flavor changed while resolving the previous spec; invalidate the in-flight resolution so
+      // it cannot overwrite the new flavor below.
+      _generation++;
     }
 
     unawaited(_acquireEngine(flavor));
@@ -303,6 +322,7 @@ class PositionEvaluator(
   Future<void> _acquireEngine(StockfishFlavor flavor) async {
     final generation = _generation;
     _resolvingSpec = true;
+    _resolvingFlavor = flavor;
     _setEngine(const AsyncLoading());
 
     try {
@@ -313,7 +333,10 @@ class PositionEvaluator(
       _engineFlavor = flavor;
       _watchEngine(spec);
     } finally {
-      if (generation == _generation) _resolvingSpec = false;
+      if (generation == _generation) {
+        _resolvingSpec = false;
+        _resolvingFlavor = null;
+      }
     }
   }
 
@@ -321,6 +344,8 @@ class PositionEvaluator(
   void _watchEngine(EngineSpec spec) {
     if (_spec == spec) return;
 
+    _currentSearch?.stop();
+    _currentSearch = null;
     _detachEngine();
     _engineSubscription?.close();
     _spec = spec;
@@ -378,6 +403,7 @@ class PositionEvaluator(
   /// with nobody watching, which is what lets one analysis screen hand its engine to the next.
   /// [invalidate] skips that, for an engine that is already broken.
   void _releaseEngine({bool invalidate = false}) {
+    _generation++;
     _pauseTimer?.cancel();
     _pauseTimer = null;
 
@@ -392,6 +418,7 @@ class PositionEvaluator(
     _spec = null;
     _engineFlavor = null;
     _resolvingSpec = false;
+    _resolvingFlavor = null;
     if (invalidate && spec != null) ref.invalidate(engineProvider(spec));
   }
 

@@ -417,6 +417,91 @@ void main() {
       expect(await superseded.bestMove, isNull);
     });
 
+    test('bestmove before readyok waits for readyok before starting the queued search', () async {
+      final transport = FakeTransport();
+      final engine = Engine(transport);
+      addTearDown(engine.dispose);
+      await pumpEventQueue();
+
+      final first = await startSearch(engine, transport, makeRequest());
+      transport.takeCommands();
+
+      final second = engine.search(makeRequest(moves: const IListConst(['e2e4'])));
+      await pumpEventQueue();
+      expect(transport.takeCommands(), ['stop', 'isready']);
+
+      // Previous search finishes before `readyok` arrives: the queued search must not start yet.
+      transport.emit('bestmove e2e4');
+      await pumpEventQueue();
+      expect(await first.bestMove, 'e2e4');
+      expect(transport.commands, isEmpty);
+      expect(engine.isSearching.value, isTrue);
+
+      // Once `readyok` arrives, the queued search starts.
+      transport.emit('readyok');
+      await pumpEventQueue();
+      expect(transport.takeCommands(), [
+        'position fen ${Chess.initial.fen} moves e2e4',
+        'go movetime 1000',
+      ]);
+      expect(engine.isSearching.value, isTrue);
+
+      transport.emit('bestmove e7e5');
+      expect(await second.bestMove, 'e7e5');
+    });
+
+    test('a superseded search isready does not let the next search start early', () async {
+      final transport = FakeTransport();
+      final engine = Engine(transport);
+      addTearDown(engine.dispose);
+      await pumpEventQueue();
+
+      final first = engine.search(makeRequest(game: 'game-1'));
+      final second = engine.search(makeRequest(game: 'game-2', moves: const IListConst(['d2d4'])));
+      await pumpEventQueue();
+
+      expect(await first.bestMove, isNull);
+      expect(transport.takeCommands(), ['ucinewgame', 'isready', 'ucinewgame', 'isready']);
+
+      // First `readyok` belongs to the superseded search and must not launch `second`.
+      transport.emit('readyok');
+      await pumpEventQueue();
+      expect(transport.commands, isEmpty);
+      expect(engine.isSearching.value, isFalse);
+
+      // Second `readyok` confirms `game-2`'s `ucinewgame` is done, so `second` starts now.
+      transport.emit('readyok');
+      await pumpEventQueue();
+      expect(transport.takeCommands(), [
+        'setoption name UCI_Chess960 value true',
+        'position fen ${Chess.initial.fen} moves d2d4',
+        'go movetime 1000',
+      ]);
+      expect(engine.isSearching.value, isTrue);
+
+      transport.emit('bestmove d7d5');
+      expect(await second.bestMove, 'd7d5');
+    });
+
+    test('stop while readyok is pending clears isSearching when bestmove arrives first', () async {
+      final transport = FakeTransport();
+      final engine = Engine(transport);
+      addTearDown(engine.dispose);
+      await pumpEventQueue();
+
+      await startSearch(engine, transport, makeRequest());
+      transport.takeCommands();
+
+      engine.search(makeRequest(moves: const IListConst(['e2e4'])));
+      engine.stop();
+      await pumpEventQueue();
+
+      transport.emit('bestmove e2e4');
+      await pumpEventQueue();
+      expect(engine.isSearching.value, isFalse);
+      expect(transport.commands, ['stop', 'isready']);
+    });
+
     test('an engine that dies releases the searches waiting on it', () async {
       final transport = FakeTransport();
       final engine = Engine(transport);

@@ -67,9 +67,12 @@ class EngineHolder(final EngineSpec spec) extends AsyncNotifier<Engine> {
       throw EngineNoLongerWatched(spec);
     }
 
+    var disposing = false;
+
     // Registered before anything else can throw, so that from here on the engine has an owner
     // whatever else happens in this build.
     ref.onDispose(() {
+      disposing = true;
       // Fire and forget: the factory holds the slot until the engine has actually exited, and
       // makes the next create wait for it.
       unawaited(engine.dispose());
@@ -103,9 +106,17 @@ class EngineHolder(final EngineSpec spec) extends AsyncNotifier<Engine> {
     // the next build makes another one.
     unawaited(
       engine.death.then((failure) {
-        if (!ref.mounted || failure == null) return;
-        _logger.severe('The engine died: $failure');
-        state = AsyncError(failure, StackTrace.current);
+        if (!ref.mounted || disposing) return;
+        if (failure != null) {
+          _logger.severe('The engine died: $failure');
+          state = AsyncError(failure, StackTrace.current);
+        } else {
+          // The engine exited cleanly on its own without being disposed (for example, the native
+          // handle moved to `disposed`). Invalidate so watchers rebuild a fresh engine instead of
+          // keeping a dead handle.
+          _logger.warning('The $spec engine exited unexpectedly; invalidating provider');
+          ref.invalidateSelf();
+        }
       }),
     );
 
